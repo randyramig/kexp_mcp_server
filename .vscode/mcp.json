@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "kexp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "tsx",
+        "src/index.ts",
+        "--transport=stdio"
+      ],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
