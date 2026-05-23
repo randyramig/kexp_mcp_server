@@ -99,8 +99,11 @@ async function startSseServer(port: number): Promise<void> {
         error: 'Route not found. Use GET /sse to start an SSE session and POST /messages?sessionId=<id> for JSON-RPC messages.',
       });
     } catch (error) {
+      process.stderr.write(
+        `SSE request handling failed: ${error instanceof Error ? error.message : String(error)}\n`
+      );
       writeJson(res, 500, {
-        error: error instanceof Error ? error.message : String(error),
+        error: 'Internal server error while handling the request.',
       });
     }
   });
