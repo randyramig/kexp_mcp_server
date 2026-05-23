@@ -1,0 +1,34 @@
+{
+  "name": "kexp_mcp_server",
+  "version": "1.0.0",
+  "description": "TypeScript MCP server for the KEXP REST API with stdio and SSE transports",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "start:stdio": "node --import tsx src/index.ts --transport=stdio",
+    "start:sse": "node --import tsx src/index.ts --transport=sse",
+    "start": "node dist/index.js --transport=stdio"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/randyramig/kexp_mcp_server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/randyramig/kexp_mcp_server/issues"
+  },
+  "homepage": "https://github.com/randyramig/kexp_mcp_server#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}
