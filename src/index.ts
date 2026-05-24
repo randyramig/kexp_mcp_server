@@ -1,12 +1,14 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { URL } from 'node:url';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createKexpMcpServer } from './server.js';
 
 type SessionState = {
-  transport: SSEServerTransport;
+  transport: StreamableHTTPServerTransport;
   server: McpServer;
 };
 
@@ -51,7 +53,7 @@ async function startStdioServer(): Promise<void> {
   await server.connect(transport);
 }
 
-async function startSseServer(port: number): Promise<void> {
+async function startSseServer(port: number, host?: string): Promise<void> {
   const sessions = new Map<string, SessionState>();
 
   const httpServer = createServer(async (req, res) => {
@@ -59,44 +61,63 @@ async function startSseServer(port: number): Promise<void> {
       const method = req.method ?? 'GET';
       const requestUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
-      if (method === 'GET' && requestUrl.pathname === '/sse') {
-        const server = createKexpMcpServer();
-        const transport = new SSEServerTransport('/messages', res);
-        const sessionId = transport.sessionId;
-
-        sessions.set(sessionId, { transport, server });
-
-        transport.onclose = () => {
-          const session = sessions.get(sessionId);
-          sessions.delete(sessionId);
-          void session?.server.close();
-        };
-
-        await server.connect(transport);
+      if (method === 'GET' && requestUrl.pathname === '/health') {
+        writeJson(res, 200, { ok: true });
         return;
       }
 
-      if (method === 'POST' && requestUrl.pathname === '/messages') {
-        const sessionId = requestUrl.searchParams.get('sessionId');
+      if (requestUrl.pathname === '/mcp' && (method === 'GET' || method === 'POST' || method === 'DELETE')) {
+        const parsedBody = method === 'POST' ? await readJsonBody(req) : undefined;
+        const mcpSessionHeader = req.headers['mcp-session-id'];
+        const mcpSessionId = Array.isArray(mcpSessionHeader) ? mcpSessionHeader[0] : mcpSessionHeader;
+        let session = mcpSessionId ? sessions.get(mcpSessionId) : undefined;
 
-        if (!sessionId) {
-          writeJson(res, 400, { error: 'Missing required query parameter: sessionId' });
-          return;
-        }
-
-        const session = sessions.get(sessionId);
         if (!session) {
-          writeJson(res, 404, { error: `No active SSE session found for sessionId: ${sessionId}` });
-          return;
+          if (method !== 'POST' || !parsedBody || !isInitializeRequest(parsedBody)) {
+            writeJson(res, 400, {
+              jsonrpc: '2.0',
+              error: {
+                code: -32000,
+                message: 'Bad Request: No valid MCP session. Initialize first with POST /mcp.',
+              },
+              id: null,
+            });
+            return;
+          }
+
+          const server = createKexpMcpServer();
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (sessionId) => {
+              sessions.set(sessionId, { transport, server });
+            },
+          });
+
+          transport.onclose = () => {
+            const sessionId = transport.sessionId;
+            if (sessionId) {
+              sessions.delete(sessionId);
+            }
+            void server.close();
+          };
+
+          await server.connect(transport as Parameters<McpServer['connect']>[0]);
+          session = { transport, server };
         }
 
-        const parsedBody = await readJsonBody(req);
-        await session.transport.handlePostMessage(req, res, parsedBody);
+        await session.transport.handleRequest(req, res, parsedBody);
+        return;
+      }
+
+      if (requestUrl.pathname === '/sse' || requestUrl.pathname === '/messages') {
+        writeJson(res, 410, {
+          error: 'Deprecated route. Use /mcp with Streamable HTTP transport.',
+        });
         return;
       }
 
       writeJson(res, 404, {
-        error: 'Route not found. Use GET /sse to start an SSE session and POST /messages?sessionId=<id> for JSON-RPC messages.',
+        error: 'Route not found. Use /mcp for MCP requests and GET /health for liveness.',
       });
     } catch (error) {
       process.stderr.write(
@@ -108,8 +129,9 @@ async function startSseServer(port: number): Promise<void> {
     }
   });
 
-  httpServer.listen(port, () => {
-    process.stderr.write(`KEXP MCP SSE server listening on http://localhost:${port}\n`);
+  httpServer.listen(port, host, () => {
+    const displayHost = host || '0.0.0.0';
+    process.stderr.write(`KEXP MCP SSE server listening on http://${displayHost}:${port}\n`);
   });
 
   const shutdown = async (): Promise<void> => {
@@ -138,20 +160,23 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (transport === 'sse') {
+  if (transport === 'sse' || transport === 'http' || transport === 'streamable-http') {
     const portFlag = readCliFlag('port');
+    const hostFlag = readCliFlag('host');
     const portEnv = process.env.PORT;
+    const hostEnv = process.env.HOST;
     const parsedPort = Number(portFlag ?? portEnv ?? '3000');
+    const host = hostFlag ?? hostEnv ?? '0.0.0.0';
 
     if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
       throw new Error('Port must be an integer between 1 and 65535.');
     }
 
-    await startSseServer(parsedPort);
+    await startSseServer(parsedPort, host);
     return;
   }
 
-  throw new Error(`Unsupported transport: ${transport}. Use "stdio" or "sse".`);
+  throw new Error(`Unsupported transport: ${transport}. Use "stdio", "sse", "http", or "streamable-http".`);
 }
 
 main().catch((error) => {
