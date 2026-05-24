@@ -86,6 +86,7 @@ export function buildKexpItemUrl({ endpoint, id, query = {} }: KexpItemRequest):
 
 export async function fetchKexpJson(url: URL): Promise<unknown> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Accept: 'application/json',
     },

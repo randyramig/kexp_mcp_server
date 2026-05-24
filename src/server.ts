@@ -3,13 +3,66 @@ import { z } from 'zod';
 import { buildKexpItemUrl, buildKexpListUrl, fetchKexpJson } from './kexpClient.js';
 import type { KexpQueryValue } from './kexpClient.js';
 
+const MAX_LOOKBACK_DAYS = 30;
+const MAX_LOOKBACK_MS = MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+
 function errorResponse(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true as const };
 }
 
 function okResponse(data: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
+}
+
+function parseIsoDate(fieldName: string, value: string): Date {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`\`${fieldName}\` must be a valid ISO 8601 datetime string.`);
+  }
+  return parsed;
+}
+
+function enforcePast30DayWindow(
+  afterValue: string | undefined,
+  beforeValue: string | undefined,
+  afterFieldName: string,
+  beforeFieldName: string,
+): { after: string; before: string } {
+  const now = new Date();
+  const oldestAllowed = new Date(now.getTime() - MAX_LOOKBACK_MS);
+
+  const afterDate = afterValue ? parseIsoDate(afterFieldName, afterValue) : oldestAllowed;
+  const beforeDate = beforeValue ? parseIsoDate(beforeFieldName, beforeValue) : now;
+
+  if (afterDate < oldestAllowed) {
+    throw new Error(`\`${afterFieldName}\` must be within the past ${MAX_LOOKBACK_DAYS} days.`);
+  }
+
+  if (beforeDate < oldestAllowed) {
+    throw new Error(`\`${beforeFieldName}\` must be within the past ${MAX_LOOKBACK_DAYS} days.`);
+  }
+
+  if (afterDate > now) {
+    throw new Error(`\`${afterFieldName}\` cannot be in the future.`);
+  }
+
+  if (beforeDate > now) {
+    throw new Error(`\`${beforeFieldName}\` cannot be in the future.`);
+  }
+
+  if (afterDate > beforeDate) {
+    throw new Error(`\`${afterFieldName}\` must be earlier than or equal to \`${beforeFieldName}\`.`);
+  }
+
+  if (beforeDate.getTime() - afterDate.getTime() > MAX_LOOKBACK_MS) {
+    throw new Error(`Date range cannot exceed ${MAX_LOOKBACK_DAYS} days.`);
+  }
+
+  return {
+    after: afterDate.toISOString(),
+    before: beforeDate.toISOString(),
+  };
 }
 
 export function createKexpMcpServer(): McpServer {
@@ -23,34 +76,50 @@ export function createKexpMcpServer(): McpServer {
   server.registerTool(
     'kexp_list_plays',
     {
-      description: 'List plays from KEXP radio. Each play is either a trackplay (a song was played) or an airbreak (station ID / non-music segment). Results are ordered newest-first by default. Use this to see what is currently on air, browse recent music, search by artist, or get the playlist for a specific show.',
+      description: 'List plays from KEXP radio, limited to a maximum lookback window of the past 30 days. Each play is either a trackplay (a song was played) or an airbreak (station ID / non-music segment). Results are ordered newest-first by default. Supports filtering by one or more KEXP show IDs, artist, play type, and date range. If no date bounds are provided, the server defaults to the last 30 days.',
       inputSchema: {
-        limit: z.number().int().min(1).max(200).default(20)
-          .describe('Number of results to return (1–200). Default 20.'),
+        limit: z.number().int().min(1).max(50).default(20)
+          .describe('Number of results to return (1–50). Default 20. Use pagination via `offset` for larger result sets.'),
         offset: z.number().int().min(0).default(0)
           .describe('Number of results to skip for pagination. Default 0.'),
-        show: z.number().int().positive().optional()
-          .describe('Filter by show ID. Returns only plays that aired during this show.'),
+        show_ids: z.union([
+          z.number().int().positive(),
+          z.array(z.number().int().positive()).min(1),
+        ]).optional()
+          .describe('Filter by one or more show IDs. Sent to the KEXP plays endpoint as comma-separated `show_ids`.'),
         airdate_before: z.string().optional()
-          .describe('ISO 8601 datetime string. Only return plays that aired before this time. Example: "2026-05-23T12:00:00-07:00".'),
+          .describe('ISO 8601 datetime string. Only return plays that aired before this time. Must be within the past 30 days. If omitted, defaults to now.'),
         airdate_after: z.string().optional()
-          .describe('ISO 8601 datetime string. Only return plays that aired after this time.'),
+          .describe('ISO 8601 datetime string. Only return plays that aired after this time. Must be within the past 30 days. If omitted, defaults to 30 days ago.'),
         artist: z.string().optional()
           .describe('Filter by artist name (case-insensitive substring match). Example: "Radiohead".'),
         play_type: z.enum(['trackplay', 'airbreak']).optional()
           .describe('"trackplay" = a song was played; "airbreak" = station break or non-music segment.'),
+        exclude_airbreaks: z.boolean().optional()
+          .describe('Exclude airbreak entries from the results. Useful for song-only results.'),
         ordering: z.string().default('-airdate')
           .describe('Sort order field. "-airdate" = newest first (default); "airdate" = oldest first.'),
       },
     },
-    async ({ limit, offset, show, airdate_before, airdate_after, artist, play_type, ordering }) => {
+    async ({ limit, offset, show_ids, airdate_before, airdate_after, artist, play_type, exclude_airbreaks, ordering }) => {
       try {
+        const boundedRange = enforcePast30DayWindow(
+          airdate_after,
+          airdate_before,
+          'airdate_after',
+          'airdate_before',
+        );
+
         const query: Record<string, KexpQueryValue> = { ordering };
-        if (show !== undefined) query.show = show;
-        if (airdate_before) query.airdate_before = airdate_before;
-        if (airdate_after) query.airdate_after = airdate_after;
+        const requestedShowIds = show_ids === undefined ? [] : Array.isArray(show_ids) ? show_ids : [show_ids];
+        if (requestedShowIds.length > 0) {
+          query.show_ids = [...new Set(requestedShowIds)].join(',');
+        }
+        query.airdate_after = boundedRange.after;
+        query.airdate_before = boundedRange.before;
         if (artist) query.artist = artist;
         if (play_type) query.play_type = play_type;
+        if (exclude_airbreaks !== undefined) query.exclude_airbreaks = exclude_airbreaks;
         const url = buildKexpListUrl({ endpoint: 'plays', limit, offset, query });
         return okResponse(await fetchKexpJson(url));
       } catch (err) {
@@ -81,28 +150,39 @@ export function createKexpMcpServer(): McpServer {
   server.registerTool(
     'kexp_list_shows',
     {
-      description: 'List KEXP radio shows (broadcast episodes). A show is a single on-air session associated with a named program and one or more hosts. Use this to find recent shows, shows for a specific program, or shows within a time range. To find shows by a specific host, use kexp_list_shows_by_host instead.',
+      description: 'List KEXP radio shows (broadcast episodes), limited to a maximum lookback window of the past 30 days. A show is a single on-air session associated with a named program and one or more hosts. Use this to find recent shows, shows for a specific program, or shows within a time range. If no date bounds are provided, the server defaults to the last 30 days. To find shows by a specific host, use kexp_list_shows_by_host instead.',
       inputSchema: {
-        limit: z.number().int().min(1).max(200).default(20)
-          .describe('Number of results to return (1–200). Default 20.'),
+        limit: z.number().int().min(1).max(50).default(20)
+          .describe('Number of results to return (1–50). Default 20. Use pagination via `offset` for larger result sets.'),
         offset: z.number().int().min(0).default(0)
           .describe('Number of results to skip for pagination. Default 0.'),
         program: z.number().int().positive().optional()
           .describe('Filter by program ID. Returns only shows that belong to this program.'),
         start_time_after: z.string().optional()
-          .describe('ISO 8601 datetime. Only return shows that started after this time.'),
+          .describe('ISO 8601 datetime. Only return shows that started after this time. Must be within the past 30 days. If omitted, defaults to 30 days ago.'),
         start_time_before: z.string().optional()
-          .describe('ISO 8601 datetime. Only return shows that started before this time.'),
+          .describe('ISO 8601 datetime. Only return shows that started before this time. Must be within the past 30 days. If omitted, defaults to now.'),
         playlist_location: z.number().int().positive().optional()
           .describe('Filter by broadcast location ID. 1 = Default/main broadcast stream.'),
       },
     },
     async ({ limit, offset, program, start_time_after, start_time_before, playlist_location }) => {
       try {
+        if (limit > 50) {
+          return errorResponse(new Error('`limit` must be an integer between 1 and 50 (inclusive).'));
+        }
+
+        const boundedRange = enforcePast30DayWindow(
+          start_time_after,
+          start_time_before,
+          'start_time_after',
+          'start_time_before',
+        );
+
         const query: Record<string, KexpQueryValue> = {};
         if (program !== undefined) query.program = program;
-        if (start_time_after) query.start_time_after = start_time_after;
-        if (start_time_before) query.start_time_before = start_time_before;
+        query.start_time_after = boundedRange.after;
+        query.start_time_before = boundedRange.before;
         if (playlist_location !== undefined) query.playlist_location = playlist_location;
         const url = buildKexpListUrl({ endpoint: 'shows', limit, offset, query });
         return okResponse(await fetchKexpJson(url));
@@ -132,20 +212,28 @@ export function createKexpMcpServer(): McpServer {
   server.registerTool(
     'kexp_list_shows_by_host',
     {
-      description: 'Find all KEXP shows hosted by a specific DJ within an optional time range. Use this to answer questions like "how many shows did [DJ name] do this week?" or "what has [DJ] hosted recently?". Accepts a host name (partial, case-insensitive match) or a numeric host ID. Automatically paginates through all shows and filters client-side, since the KEXP API does not support host filtering on the shows endpoint.',
+      description: 'Find KEXP shows hosted by a specific DJ within a time range limited to the past 30 days. Use this to answer questions like "how many shows did [DJ name] do this week?" or "what has [DJ] hosted recently?". Accepts a host name (partial, case-insensitive match) or a numeric host ID. Automatically paginates through shows in that 30-day window and filters client-side, since the KEXP API does not support host filtering on the shows endpoint. Supports paginated output via limit/offset.',
       inputSchema: {
         host_name: z.string().optional()
           .describe('Name or partial name of the host (case-insensitive substring match). Either host_name or host_id must be provided.'),
         host_id: z.number().int().positive().optional()
           .describe('Numeric host ID. Either host_name or host_id must be provided.'),
+        limit: z.number().int().min(1).max(50).default(20)
+          .describe('Number of matched shows to return (1–50). Default 20.'),
+        offset: z.number().int().min(0).default(0)
+          .describe('Number of matched shows to skip for pagination. Default 0.'),
         start_time_after: z.string().optional()
-          .describe('ISO 8601 datetime. Only return shows that started after this time.'),
+          .describe('ISO 8601 datetime. Only return shows that started after this time. Must be within the past 30 days. If omitted, defaults to 30 days ago.'),
         start_time_before: z.string().optional()
-          .describe('ISO 8601 datetime. Only return shows that started before this time.'),
+          .describe('ISO 8601 datetime. Only return shows that started before this time. Must be within the past 30 days. If omitted, defaults to now.'),
       },
     },
-    async ({ host_name, host_id, start_time_after, start_time_before }) => {
+    async ({ host_name, host_id, limit, offset, start_time_after, start_time_before }) => {
       try {
+        if (limit > 50) {
+          return errorResponse(new Error('`limit` must be an integer between 1 and 50 (inclusive).'));
+        }
+
         if (host_id === undefined && !host_name) {
           return errorResponse(new Error('Either host_name or host_id must be provided.'));
         }
@@ -171,9 +259,16 @@ export function createKexpMcpServer(): McpServer {
 
         // Step 2: Paginate through all shows in the time range, filtering client-side
         const matchedShows: unknown[] = [];
-        const showQuery: Record<string, KexpQueryValue> = {};
-        if (start_time_after) showQuery.start_time_after = start_time_after;
-        if (start_time_before) showQuery.start_time_before = start_time_before;
+        const boundedRange = enforcePast30DayWindow(
+          start_time_after,
+          start_time_before,
+          'start_time_after',
+          'start_time_before',
+        );
+        const showQuery: Record<string, KexpQueryValue> = {
+          start_time_after: boundedRange.after,
+          start_time_before: boundedRange.before,
+        };
 
         let nextUrl: URL | string | null = buildKexpListUrl({ endpoint: 'shows', limit: 200, offset: 0, query: showQuery });
         while (nextUrl) {
@@ -187,10 +282,19 @@ export function createKexpMcpServer(): McpServer {
           nextUrl = page.next;
         }
 
+        const totalCount = matchedShows.length;
+        const pagedShows = matchedShows.slice(offset, offset + limit);
+        const nextOffset = offset + limit < totalCount ? offset + limit : null;
+        const previousOffset = offset > 0 ? Math.max(0, offset - limit) : null;
+
         return okResponse({
           host: { id: resolvedHostId, name: resolvedHostName },
-          total_count: matchedShows.length,
-          shows: matchedShows,
+          total_count: totalCount,
+          limit,
+          offset,
+          next_offset: nextOffset,
+          previous_offset: previousOffset,
+          shows: pagedShows,
         });
       } catch (err) {
         return errorResponse(err);

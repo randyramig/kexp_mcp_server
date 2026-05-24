@@ -76,32 +76,53 @@ Run `npm run build` first to produce `dist/index.js`.
 
 ## Available tools
 
+Date window policy:
+- Date-based list tools are constrained to the past 30 days to reduce upstream API load.
+- If date bounds are omitted, the server defaults to a 30-day window ending at now.
+
 ### Plays
 
 | Tool | Description |
 |---|---|
-| `kexp_list_plays` | List plays (songs and airbreaks) with optional filters for artist, show, play type, and date range. Paginated. |
+| `kexp_list_plays` | List plays (songs and airbreaks) with optional filters for artist, `show_ids`, play type, `exclude_airbreaks`, and date range. Date range is limited to the past 30 days. Paginated. |
 | `kexp_get_play` | Get a single play by ID — includes song, artist, album, airdate, DJ comment, labels, and MusicBrainz IDs. |
 
 **`kexp_list_plays` parameters:**
 
 | Parameter | Type | Description |
 |---|---|---|
-| `limit` | number | Results per page (1–200, default 20) |
+| `limit` | number | Results per page (1–50, default 20). Use `offset` for pagination. |
 | `offset` | number | Pagination offset (default 0) |
-| `show` | number | Filter by show ID |
-| `airdate_before` | string | ISO 8601 datetime — plays before this time |
-| `airdate_after` | string | ISO 8601 datetime — plays after this time |
+| `show_ids` | number \| number[] | Filter by one or more show IDs. Sent to the KEXP plays endpoint as comma-separated `show_ids`. |
+| `airdate_before` | string | ISO 8601 datetime — plays before this time (must be within past 30 days; defaults to now) |
+| `airdate_after` | string | ISO 8601 datetime — plays after this time (must be within past 30 days; defaults to 30 days ago) |
 | `artist` | string | Artist name substring filter |
 | `play_type` | `trackplay` \| `airbreak` | Filter by play type |
+| `exclude_airbreaks` | boolean | When `true`, omit airbreak entries from the results |
 | `ordering` | string | Sort field, e.g. `-airdate` (default) or `airdate` |
 
 ### Shows
 
 | Tool | Description |
 |---|---|
-| `kexp_list_shows` | List broadcast episodes (shows). Filter by program, host, or time range. |
+| `kexp_list_shows` | List broadcast episodes (shows). Filter by program, host, or time range. Date range is limited to the past 30 days. |
 | `kexp_get_show` | Get a single show by ID — includes program, hosts, tagline, start time, and images. |
+
+**`kexp_list_shows` parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `limit` | number | Results per page (1–50, default 20). Use `offset` for pagination. |
+| `offset` | number | Pagination offset (default 0) |
+| `program` | number | Filter by program ID |
+| `start_time_before` | string | ISO 8601 datetime — shows before this time (must be within past 30 days; defaults to now) |
+| `start_time_after` | string | ISO 8601 datetime — shows after this time (must be within past 30 days; defaults to 30 days ago) |
+| `playlist_location` | number | Filter by broadcast location ID |
+
+**`kexp_list_shows_by_host` note:**
+
+- Host-based show searches are also constrained to the past 30 days.
+- The tool paginates its output with `limit` (1–50, default 20) and `offset` (default 0), and returns `next_offset` / `previous_offset` to request adjacent pages.
 
 ### Hosts
 
