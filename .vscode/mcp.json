@@ -10,6 +10,10 @@
         "--transport=stdio"
       ],
       "cwd": "${workspaceFolder}"
+    },
+  "kexp-railway": {
+      "type": "http",
+      "url": "https://kexpmcpserver-production.up.railway.app/mcp"
     }
   }
 }

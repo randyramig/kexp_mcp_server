@@ -1,13 +1,21 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { URL } from 'node:url';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createKexpMcpServer } from './server.js';
 
 type SessionState = {
-  transport: SSEServerTransport;
+  transport: StreamableHTTPServerTransport;
   server: McpServer;
+};
+
+type JsonRpcLike = {
+  id?: string | number | null;
+  method?: string;
+  params?: unknown;
 };
 
 function readCliFlag(name: string): string | undefined {
@@ -45,13 +53,26 @@ function writeJson(res: ServerResponse, statusCode: number, body: Record<string,
   res.end(JSON.stringify(body));
 }
 
+function getFirstHeader(req: IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function logJson(event: string, fields: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), event, ...fields })}\n`);
+}
+
 async function startStdioServer(): Promise<void> {
   const server = createKexpMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-async function startSseServer(port: number): Promise<void> {
+async function startSseServer(port: number, host?: string): Promise<void> {
   const sessions = new Map<string, SessionState>();
 
   const httpServer = createServer(async (req, res) => {
@@ -59,47 +80,120 @@ async function startSseServer(port: number): Promise<void> {
       const method = req.method ?? 'GET';
       const requestUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
-      if (method === 'GET' && requestUrl.pathname === '/sse') {
-        const server = createKexpMcpServer();
-        const transport = new SSEServerTransport('/messages', res);
-        const sessionId = transport.sessionId;
-
-        sessions.set(sessionId, { transport, server });
-
-        transport.onclose = () => {
-          const session = sessions.get(sessionId);
-          sessions.delete(sessionId);
-          void session?.server.close();
-        };
-
-        await server.connect(transport);
+      if (method === 'GET' && requestUrl.pathname === '/health') {
+        writeJson(res, 200, { ok: true });
         return;
       }
 
-      if (method === 'POST' && requestUrl.pathname === '/messages') {
-        const sessionId = requestUrl.searchParams.get('sessionId');
+      if (requestUrl.pathname === '/mcp' && (method === 'GET' || method === 'POST' || method === 'DELETE')) {
+        const parsedBody = method === 'POST' ? await readJsonBody(req) : undefined;
+        const mcpSessionHeader = req.headers['mcp-session-id'];
+        const mcpSessionId = Array.isArray(mcpSessionHeader) ? mcpSessionHeader[0] : mcpSessionHeader;
+        let session = mcpSessionId ? sessions.get(mcpSessionId) : undefined;
+        const sessionFound = Boolean(session);
+        const activeSessionCount = sessions.size;
 
-        if (!sessionId) {
-          writeJson(res, 400, { error: 'Missing required query parameter: sessionId' });
-          return;
-        }
+        const startedAt = Date.now();
+        const rpcRecord = asRecord(parsedBody) as JsonRpcLike | undefined;
+        const rpcMethod = typeof rpcRecord?.method === 'string' ? rpcRecord.method : null;
+        const rpcId = rpcRecord?.id ?? null;
+        const rpcParams = asRecord(rpcRecord?.params);
+        const toolName = rpcMethod === 'tools/call' && typeof rpcParams?.name === 'string'
+          ? String(rpcParams.name)
+          : null;
 
-        const session = sessions.get(sessionId);
+        const httpRequestId =
+          getFirstHeader(req, 'x-request-id') ??
+          getFirstHeader(req, 'x-correlation-id') ??
+          getFirstHeader(req, 'x-amzn-trace-id') ??
+          null;
+
+        logJson('mcp.request', {
+          http_method: method,
+          path: requestUrl.pathname,
+          mcp_session_id: mcpSessionId ?? null,
+          session_found: sessionFound,
+          active_session_count: activeSessionCount,
+          http_request_id: httpRequestId,
+          jsonrpc_id: rpcId,
+          jsonrpc_method: rpcMethod,
+          tool_name: toolName,
+        });
+
+        res.once('finish', () => {
+          const failureReason =
+            !sessionFound && (method !== 'POST' || !parsedBody || !isInitializeRequest(parsedBody))
+              ? 'invalid_or_missing_session'
+              : null;
+
+          logJson('mcp.response', {
+            http_method: method,
+            path: requestUrl.pathname,
+            status_code: res.statusCode,
+            duration_ms: Date.now() - startedAt,
+            mcp_session_id: mcpSessionId ?? null,
+            session_found: sessionFound,
+            active_session_count: activeSessionCount,
+            failure_reason: failureReason,
+            http_request_id: httpRequestId,
+            jsonrpc_id: rpcId,
+            jsonrpc_method: rpcMethod,
+            tool_name: toolName,
+          });
+        });
+
         if (!session) {
-          writeJson(res, 404, { error: `No active SSE session found for sessionId: ${sessionId}` });
-          return;
+          if (method !== 'POST' || !parsedBody || !isInitializeRequest(parsedBody)) {
+            writeJson(res, 400, {
+              jsonrpc: '2.0',
+              error: {
+                code: -32000,
+                message: 'Bad Request: No valid MCP session. Initialize first with POST /mcp.',
+              },
+              id: null,
+            });
+            return;
+          }
+
+          const server = createKexpMcpServer();
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (sessionId) => {
+              sessions.set(sessionId, { transport, server });
+            },
+          });
+
+          transport.onclose = () => {
+            const sessionId = transport.sessionId;
+            if (sessionId) {
+              sessions.delete(sessionId);
+            }
+            void server.close();
+          };
+
+          await server.connect(transport as Parameters<McpServer['connect']>[0]);
+          session = { transport, server };
         }
 
-        const parsedBody = await readJsonBody(req);
-        await session.transport.handlePostMessage(req, res, parsedBody);
+        await session.transport.handleRequest(req, res, parsedBody);
+        return;
+      }
+
+      if (requestUrl.pathname === '/sse' || requestUrl.pathname === '/messages') {
+        writeJson(res, 410, {
+          error: 'Deprecated route. Use /mcp with Streamable HTTP transport.',
+        });
         return;
       }
 
       writeJson(res, 404, {
-        error: 'Route not found. Use GET /sse to start an SSE session and POST /messages?sessionId=<id> for JSON-RPC messages.',
+        error: 'Route not found. Use /mcp for MCP requests and GET /health for liveness.',
       });
     } catch (error) {
-      process.stderr.write(
+      logJson('mcp.error', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.stdout.write(
         `SSE request handling failed: ${error instanceof Error ? error.message : String(error)}\n`
       );
       writeJson(res, 500, {
@@ -108,8 +202,9 @@ async function startSseServer(port: number): Promise<void> {
     }
   });
 
-  httpServer.listen(port, () => {
-    process.stderr.write(`KEXP MCP SSE server listening on http://localhost:${port}\n`);
+  httpServer.listen(port, host, () => {
+    const displayHost = host || '0.0.0.0';
+    process.stdout.write(`KEXP MCP SSE server listening on http://${displayHost}:${port}\n`);
   });
 
   const shutdown = async (): Promise<void> => {
@@ -138,20 +233,23 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (transport === 'sse') {
+  if (transport === 'sse' || transport === 'http' || transport === 'streamable-http') {
     const portFlag = readCliFlag('port');
+    const hostFlag = readCliFlag('host');
     const portEnv = process.env.PORT;
+    const hostEnv = process.env.HOST;
     const parsedPort = Number(portFlag ?? portEnv ?? '3000');
+    const host = hostFlag ?? hostEnv ?? '0.0.0.0';
 
     if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
       throw new Error('Port must be an integer between 1 and 65535.');
     }
 
-    await startSseServer(parsedPort);
+    await startSseServer(parsedPort, host);
     return;
   }
 
-  throw new Error(`Unsupported transport: ${transport}. Use "stdio" or "sse".`);
+  throw new Error(`Unsupported transport: ${transport}. Use "stdio", "sse", "http", or "streamable-http".`);
 }
 
 main().catch((error) => {

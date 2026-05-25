@@ -4,7 +4,7 @@ export type KexpQueryValue = string | number | boolean;
 
 export interface KexpListRequest {
   endpoint: string;
-  page?: number;
+  offset?: number;
   limit?: number;
   query?: Record<string, KexpQueryValue>;
 }
@@ -43,18 +43,18 @@ function normalizeId(id: string): string {
   return normalized;
 }
 
-export function buildKexpListUrl({ endpoint, page = 1, limit = 20, query = {} }: KexpListRequest): URL {
-  if (!Number.isInteger(page) || page < 1) {
-    throw new Error('`page` must be an integer greater than or equal to 1.');
+export function buildKexpListUrl({ endpoint, offset = 0, limit = 20, query = {} }: KexpListRequest): URL {
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new Error('`offset` must be a non-negative integer.');
   }
 
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    throw new Error('`limit` must be an integer between 1 and 100.');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+    throw new Error('`limit` must be an integer between 1 and 200.');
   }
 
   const normalizedEndpoint = normalizeEndpoint(endpoint);
   const url = new URL(`${normalizedEndpoint}/`, KEXP_API_BASE_URL);
-  url.searchParams.set('page', String(page));
+  url.searchParams.set('offset', String(offset));
   url.searchParams.set('limit', String(limit));
 
   for (const [key, value] of Object.entries(query)) {
@@ -86,6 +86,7 @@ export function buildKexpItemUrl({ endpoint, id, query = {} }: KexpItemRequest):
 
 export async function fetchKexpJson(url: URL): Promise<unknown> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Accept: 'application/json',
     },
@@ -97,5 +98,16 @@ export async function fetchKexpJson(url: URL): Promise<unknown> {
     throw new Error(`KEXP API request failed (${response.status} ${response.statusText}): ${message}`);
   }
 
-  return response.json();
+  const responseText = await response.text();
+
+  // These characters are valid JSON but can break some JS parser/transport boundaries.
+  const sanitizedText = responseText
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+
+  try {
+    return JSON.parse(sanitizedText);
+  } catch {
+    throw new Error('KEXP API returned invalid JSON.');
+  }
 }
