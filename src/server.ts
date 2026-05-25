@@ -6,13 +6,17 @@ import type { KexpQueryValue } from './kexpClient.js';
 const MAX_LOOKBACK_DAYS = 30;
 const MAX_LOOKBACK_MS = MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
 
+function sanitizeText(text: string): string {
+  return text.replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 function errorResponse(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true as const };
+  return { content: [{ type: 'text' as const, text: sanitizeText(`Error: ${message}`) }], isError: true as const };
 }
 
 function okResponse(data: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
+  return { content: [{ type: 'text' as const, text: sanitizeText(JSON.stringify(data)) }] };
 }
 
 function parseIsoDate(fieldName: string, value: string): Date {

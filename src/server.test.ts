@@ -136,6 +136,40 @@ test('kexp_list_shows_by_host returns paginated response fields', async () => {
   }
 });
 
+test('tool responses escape U+2028 and U+2029 in outbound text payloads', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    count: 1,
+    next: null,
+    previous: null,
+    results: [{ id: 42, name: 'DJ\u2028Line\u2029Para' }],
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  try {
+    const result = await client.callTool({
+      name: 'kexp_list_hosts',
+      arguments: {},
+    }) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+
+    assert.equal(result.isError, undefined);
+    const text = result.content.find((item) => item.type === 'text')?.text ?? '';
+    assert.ok(!text.includes('\u2028'), 'U+2028 must not appear raw in outbound payload');
+    assert.ok(!text.includes('\u2029'), 'U+2029 must not appear raw in outbound payload');
+    assert.ok(text.includes('\\u2028'), 'U+2028 must be escaped in outbound payload');
+    assert.ok(text.includes('\\u2029'), 'U+2029 must be escaped in outbound payload');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
 test('shows tools reject limit values above 50', async () => {
   const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
 
