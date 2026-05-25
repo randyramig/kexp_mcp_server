@@ -50,6 +50,30 @@ This repo includes a `railway.toml` so Railway can build and run it with SSE tra
 
 Railway injects `PORT` automatically, and this server binds to `0.0.0.0` by default.
 
+### Watching Railway logs for MCP requests
+
+The HTTP transport emits structured JSON logs to stderr for each MCP request:
+
+- `mcp.request` when a request enters `/mcp`
+- `mcp.response` when the response finishes
+- `mcp.error` for unhandled request errors
+
+Each entry includes correlation fields you can search in Railway logs:
+
+- `jsonrpc_id`
+- `jsonrpc_method`
+- `tool_name` (for `tools/call`, for example `kexp_list_plays`)
+- `mcp_session_id`
+- `http_request_id` (from `x-request-id`, `x-correlation-id`, or `x-amzn-trace-id` when present)
+
+Example log line:
+
+```json
+{"ts":"2026-05-24T00:00:00.000Z","event":"mcp.request","http_method":"POST","path":"/mcp","mcp_session_id":"6a6f...","http_request_id":"req_123","jsonrpc_id":"call_abc","jsonrpc_method":"tools/call","tool_name":"kexp_list_plays"}
+```
+
+If an external request ID from your client does not match `http_request_id`, use timestamp + `tool_name` + `jsonrpc_id` + `mcp_session_id` together to correlate calls.
+
 ## Build and test
 
 ```bash

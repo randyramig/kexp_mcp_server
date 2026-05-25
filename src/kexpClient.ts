@@ -98,5 +98,16 @@ export async function fetchKexpJson(url: URL): Promise<unknown> {
     throw new Error(`KEXP API request failed (${response.status} ${response.statusText}): ${message}`);
   }
 
-  return response.json();
+  const responseText = await response.text();
+
+  // These characters are valid JSON but can break some JS parser/transport boundaries.
+  const sanitizedText = responseText
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+
+  try {
+    return JSON.parse(sanitizedText);
+  } catch {
+    throw new Error('KEXP API returned invalid JSON.');
+  }
 }

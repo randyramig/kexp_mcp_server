@@ -12,6 +12,12 @@ type SessionState = {
   server: McpServer;
 };
 
+type JsonRpcLike = {
+  id?: string | number | null;
+  method?: string;
+  params?: unknown;
+};
+
 function readCliFlag(name: string): string | undefined {
   const prefixed = `--${name}=`;
   const match = process.argv.find((arg) => arg.startsWith(prefixed));
@@ -47,6 +53,19 @@ function writeJson(res: ServerResponse, statusCode: number, body: Record<string,
   res.end(JSON.stringify(body));
 }
 
+function getFirstHeader(req: IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function logJson(event: string, fields: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), event, ...fields })}\n`);
+}
+
 async function startStdioServer(): Promise<void> {
   const server = createKexpMcpServer();
   const transport = new StdioServerTransport();
@@ -71,6 +90,57 @@ async function startSseServer(port: number, host?: string): Promise<void> {
         const mcpSessionHeader = req.headers['mcp-session-id'];
         const mcpSessionId = Array.isArray(mcpSessionHeader) ? mcpSessionHeader[0] : mcpSessionHeader;
         let session = mcpSessionId ? sessions.get(mcpSessionId) : undefined;
+        const sessionFound = Boolean(session);
+        const activeSessionCount = sessions.size;
+
+        const startedAt = Date.now();
+        const rpcRecord = asRecord(parsedBody) as JsonRpcLike | undefined;
+        const rpcMethod = typeof rpcRecord?.method === 'string' ? rpcRecord.method : null;
+        const rpcId = rpcRecord?.id ?? null;
+        const rpcParams = asRecord(rpcRecord?.params);
+        const toolName = rpcMethod === 'tools/call' && typeof rpcParams?.name === 'string'
+          ? String(rpcParams.name)
+          : null;
+
+        const httpRequestId =
+          getFirstHeader(req, 'x-request-id') ??
+          getFirstHeader(req, 'x-correlation-id') ??
+          getFirstHeader(req, 'x-amzn-trace-id') ??
+          null;
+
+        logJson('mcp.request', {
+          http_method: method,
+          path: requestUrl.pathname,
+          mcp_session_id: mcpSessionId ?? null,
+          session_found: sessionFound,
+          active_session_count: activeSessionCount,
+          http_request_id: httpRequestId,
+          jsonrpc_id: rpcId,
+          jsonrpc_method: rpcMethod,
+          tool_name: toolName,
+        });
+
+        res.once('finish', () => {
+          const failureReason =
+            !sessionFound && (method !== 'POST' || !parsedBody || !isInitializeRequest(parsedBody))
+              ? 'invalid_or_missing_session'
+              : null;
+
+          logJson('mcp.response', {
+            http_method: method,
+            path: requestUrl.pathname,
+            status_code: res.statusCode,
+            duration_ms: Date.now() - startedAt,
+            mcp_session_id: mcpSessionId ?? null,
+            session_found: sessionFound,
+            active_session_count: activeSessionCount,
+            failure_reason: failureReason,
+            http_request_id: httpRequestId,
+            jsonrpc_id: rpcId,
+            jsonrpc_method: rpcMethod,
+            tool_name: toolName,
+          });
+        });
 
         if (!session) {
           if (method !== 'POST' || !parsedBody || !isInitializeRequest(parsedBody)) {
@@ -120,7 +190,10 @@ async function startSseServer(port: number, host?: string): Promise<void> {
         error: 'Route not found. Use /mcp for MCP requests and GET /health for liveness.',
       });
     } catch (error) {
-      process.stderr.write(
+      logJson('mcp.error', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.stdout.write(
         `SSE request handling failed: ${error instanceof Error ? error.message : String(error)}\n`
       );
       writeJson(res, 500, {
@@ -131,7 +204,7 @@ async function startSseServer(port: number, host?: string): Promise<void> {
 
   httpServer.listen(port, host, () => {
     const displayHost = host || '0.0.0.0';
-    process.stderr.write(`KEXP MCP SSE server listening on http://${displayHost}:${port}\n`);
+    process.stdout.write(`KEXP MCP SSE server listening on http://${displayHost}:${port}\n`);
   });
 
   const shutdown = async (): Promise<void> => {
