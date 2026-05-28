@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -38,6 +39,38 @@ test('list tool schemas enforce 1-50 limits for shows and shows-by-host', async 
     assert.ok(showsByHostProps.offset, 'Expected kexp_list_shows_by_host.offset schema');
     assert.equal(showsByHostProps.limit.maximum, 50);
     assert.equal(showsByHostProps.offset.minimum, 0);
+  } finally {
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp-about resource is listed and returns markdown contents', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+
+  try {
+    const resources = await client.listResources();
+    const aboutResource = resources.resources.find((resource) => resource.name === 'kexp-about');
+
+    assert.ok(aboutResource, 'Expected kexp-about resource to be registered');
+    assert.equal(aboutResource.uri, 'kexp://about');
+    assert.equal(aboutResource.mimeType, 'text/markdown');
+
+    const response = await client.readResource({ uri: 'kexp://about' });
+    assert.equal(response.contents.length, 1);
+
+    const firstContent = response.contents[0];
+    assert.ok(firstContent, 'Expected resource read response content');
+    assert.ok('text' in firstContent, 'Expected text resource content');
+    if (!('text' in firstContent)) {
+      throw new Error('Expected text field in resource content.');
+    }
+
+    const expectedMarkdown = await readFile(new URL('./kexp-about.md', import.meta.url), 'utf8');
+    assert.equal(firstContent.uri, 'kexp://about');
+    assert.equal(firstContent.mimeType, 'text/markdown');
+    assert.equal(firstContent.text, expectedMarkdown);
   } finally {
     await clientTransport.close();
     await serverTransport.close();
@@ -338,6 +371,197 @@ test('kexp_list_in_studio_events rejects invalid date filters', async () => {
     const text = result.content.find((item) => item.type === 'text')?.text ?? '';
     assert.match(text, /YYYY-MM-DD/i);
   } finally {
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('new tools are all registered: kexp_now_playing, kexp_what_is_on_now, kexp_get_show_playlist, kexp_new_music, kexp_local_artist_plays', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+
+  try {
+    const tools = await client.listTools();
+    const names = tools.tools.map((t) => t.name);
+
+    assert.ok(names.includes('kexp_now_playing'), 'Expected kexp_now_playing');
+    assert.ok(names.includes('kexp_what_is_on_now'), 'Expected kexp_what_is_on_now');
+    assert.ok(names.includes('kexp_get_show_playlist'), 'Expected kexp_get_show_playlist');
+    assert.ok(names.includes('kexp_new_music'), 'Expected kexp_new_music');
+    assert.ok(names.includes('kexp_local_artist_plays'), 'Expected kexp_local_artist_plays');
+  } finally {
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_list_plays schema exposes new filter fields', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+
+  try {
+    const tools = await client.listTools();
+    const playsTool = tools.tools.find((t) => t.name === 'kexp_list_plays');
+    assert.ok(playsTool, 'Expected kexp_list_plays to be registered');
+    const props = playsTool.inputSchema.properties as Record<string, unknown>;
+    assert.ok(props['rotation_status'], 'Expected rotation_status filter');
+    assert.ok(props['is_local'], 'Expected is_local filter');
+    assert.ok(props['is_request'], 'Expected is_request filter');
+    assert.ok(props['is_live'], 'Expected is_live filter');
+  } finally {
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_now_playing combines play and show data', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input) => {
+    const url = input instanceof URL ? input : new URL(typeof input === 'string' ? input : input.url);
+
+    if (url.pathname === '/v2/plays/') {
+      return new Response(JSON.stringify({
+        results: [{
+          id: 999,
+          show: 42,
+          song: 'Test Song',
+          artist: 'Test Artist',
+          play_type: 'trackplay',
+          comment: 'A great song chosen with care.',
+          is_local: false,
+          is_request: true,
+          is_live: false,
+          rotation_status: 'Add',
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (url.pathname === '/v2/shows/42/') {
+      return new Response(JSON.stringify({
+        id: 42,
+        program_name: 'The Morning Show',
+        host_names: ['Cheryl Waters'],
+        tagline: 'Start your day with music',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    return new Response('Not found', { status: 404 });
+  };
+
+  try {
+    const result = await client.callTool({
+      name: 'kexp_now_playing',
+      arguments: {},
+    }) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+
+    assert.equal(result.isError, undefined);
+    const text = result.content.find((item) => item.type === 'text')?.text ?? '';
+    const parsed = JSON.parse(text) as { play: { song: string; show: number }; show: { program_name: string } };
+    assert.equal(parsed.play.song, 'Test Song');
+    assert.equal(parsed.play.show, 42);
+    assert.equal(parsed.show.program_name, 'The Morning Show');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_get_show_playlist passes show_ids and exclude_airbreaks to plays endpoint', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+  const originalFetch = globalThis.fetch;
+  let capturedUrl: URL | null = null;
+
+  globalThis.fetch = async (input) => {
+    const url = input instanceof URL ? input : new URL(typeof input === 'string' ? input : input.url);
+    capturedUrl = url;
+    return new Response(JSON.stringify({ count: 0, next: null, previous: null, results: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await client.callTool({
+      name: 'kexp_get_show_playlist',
+      arguments: { show_id: 66837 },
+    });
+
+    assert.ok(capturedUrl, 'Expected a fetch call to have been made');
+    const resolvedUrl1 = capturedUrl as URL;
+    assert.equal(resolvedUrl1.searchParams.get('show_ids'), '66837');
+    assert.equal(resolvedUrl1.searchParams.get('exclude_airbreaks'), 'true');
+    assert.equal(resolvedUrl1.searchParams.get('ordering'), 'airdate');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_new_music passes rotation_status to plays endpoint', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+  const originalFetch = globalThis.fetch;
+  let capturedUrl: URL | null = null;
+
+  globalThis.fetch = async (input) => {
+    const url = input instanceof URL ? input : new URL(typeof input === 'string' ? input : input.url);
+    capturedUrl = url;
+    return new Response(JSON.stringify({ count: 0, next: null, previous: null, results: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await client.callTool({
+      name: 'kexp_new_music',
+      arguments: { rotation_status: 'Heavy' },
+    });
+
+    assert.ok(capturedUrl, 'Expected a fetch call');
+    const resolvedUrl2 = capturedUrl as URL;
+    assert.equal(resolvedUrl2.searchParams.get('rotation_status'), 'Heavy');
+    assert.equal(resolvedUrl2.searchParams.get('exclude_airbreaks'), 'true');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_local_artist_plays passes is_local=true to plays endpoint', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+  const originalFetch = globalThis.fetch;
+  let capturedUrl: URL | null = null;
+
+  globalThis.fetch = async (input) => {
+    const url = input instanceof URL ? input : new URL(typeof input === 'string' ? input : input.url);
+    capturedUrl = url;
+    return new Response(JSON.stringify({ count: 0, next: null, previous: null, results: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await client.callTool({
+      name: 'kexp_local_artist_plays',
+      arguments: {},
+    });
+
+    assert.ok(capturedUrl, 'Expected a fetch call');
+    const resolvedUrl3 = capturedUrl as URL;
+    assert.equal(resolvedUrl3.searchParams.get('is_local'), 'true');
+    assert.equal(resolvedUrl3.searchParams.get('exclude_airbreaks'), 'true');
+  } finally {
+    globalThis.fetch = originalFetch;
     await clientTransport.close();
     await serverTransport.close();
     await server.close();

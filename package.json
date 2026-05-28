@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "postbuild": "node -e \"require('fs').copyFileSync('src/kexp-about.md', 'dist/kexp-about.md')\"",
     "test": "node --import tsx --test src/**/*.test.ts",
     "start:stdio": "node --import tsx src/index.ts --transport=stdio",
     "start:sse": "node --import tsx src/index.ts --transport=sse",
@@ -17,6 +18,9 @@
   "keywords": [],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": "20.x"
+  },
   "type": "module",
   "bugs": {
     "url": "https://github.com/randyramig/kexp_mcp_server/issues"
