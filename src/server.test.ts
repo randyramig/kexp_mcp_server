@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { clearInStudioEventsCache } from './kexpEventsClient.js';
 import { createKexpMcpServer } from './server.js';
 
 async function createConnectedClientServer() {
@@ -191,6 +192,151 @@ test('shows tools reject limit values above 50', async () => {
     assert.equal(showsByHostResult.isError, true);
     const showsByHostText = showsByHostResult.content.find((item) => item.type === 'text')?.text ?? '';
     assert.match(showsByHostText, /limit|1 and 50|between/i);
+  } finally {
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_list_in_studio_events tool schema exposes expected pagination and date filters', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+
+  try {
+    const tools = await client.listTools();
+    const eventsTool = tools.tools.find((tool) => tool.name === 'kexp_list_in_studio_events');
+    assert.ok(eventsTool, 'Expected kexp_list_in_studio_events to be registered');
+
+    const props = eventsTool.inputSchema.properties as Record<string, { maximum?: number; minimum?: number } | undefined>;
+    assert.ok(props.limit, 'Expected kexp_list_in_studio_events.limit schema');
+    assert.ok(props.offset, 'Expected kexp_list_in_studio_events.offset schema');
+    assert.equal(props.limit.maximum, 50);
+    assert.equal(props.limit.minimum, 1);
+    assert.equal(props.offset.minimum, 0);
+  } finally {
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_list_in_studio_events parses in-studio events with date filtering and offsets', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+  const originalFetch = globalThis.fetch;
+
+  clearInStudioEventsCache();
+
+  globalThis.fetch = async (input) => {
+    const url = input instanceof URL
+      ? input
+      : new URL(typeof input === 'string' ? input : input.url);
+
+    if (url.toString().startsWith('https://kexp.org/events/kexp-events/?category=in-studio')) {
+      const html = `
+        <html>
+          <body>
+            <h2>Monday, 1 June 2026</h2>
+            <h5>NOON</h5>
+            <h3><a href="/events/kexp-events/ladytron-live-on-kexp-kexp_485591/">Ladytron LIVE on KEXP (OPEN TO THE PUBLIC)</a></h3>
+            <a href="https://maps.google.com/?q=kexp-studio-nw-rooms">KEXP Studio (NW Rooms)</a>
+            <h5>PHOTO BY MARK MCNULTY</h5>
+            <a href="/events/kexp-events/ladytron-live-on-kexp-kexp_485591/">MORE</a>
+
+            <h2>Friday, 5 June 2026</h2>
+            <h5>11 A.M.</h5>
+            <h3><a href="/events/kexp-events/isobel-campbell-live-on-kexp-kexp_485603/">Isobel Campbell LIVE on KEXP (OPEN TO THE PUBLIC)</a></h3>
+            <a href="https://maps.google.com/?q=kexp-studio-nw-rooms">KEXP Studio (NW Rooms)</a>
+
+            <h2>Wednesday, 22 July 2026</h2>
+            <h5>3 P.M.</h5>
+            <h3><a href="/events/kexp-events/snooper-live-on-kexp-kexp_490865/">Snooper LIVE on KEXP</a></h3>
+          </body>
+        </html>
+      `;
+
+      return new Response(html, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
+    return new Response('Not found', { status: 404 });
+  };
+
+  try {
+    const result = await client.callTool({
+      name: 'kexp_list_in_studio_events',
+      arguments: {
+        start_date: '2026-06-01',
+        end_date: '2026-06-30',
+        limit: 1,
+        offset: 1,
+      },
+    }) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+
+    assert.equal(result.isError, undefined);
+
+    const textContent = result.content.find((item) => item.type === 'text');
+    assert.ok(textContent, 'Expected text content from tool response');
+    const payloadText = textContent.text;
+    if (typeof payloadText !== 'string') {
+      throw new Error('Expected text payload to be a string.');
+    }
+
+    const parsed = JSON.parse(payloadText) as {
+      total_count: number;
+      limit: number;
+      offset: number;
+      next_offset: number | null;
+      previous_offset: number | null;
+      events: Array<{
+        id: string;
+        title: string;
+        date_iso: string;
+        time_text: string;
+        venue: string | null;
+        photo_credit: string | null;
+        is_open_to_public: boolean;
+      }>;
+    };
+
+    assert.equal(parsed.total_count, 2);
+    assert.equal(parsed.limit, 1);
+    assert.equal(parsed.offset, 1);
+    assert.equal(parsed.next_offset, null);
+    assert.equal(parsed.previous_offset, 0);
+    assert.equal(parsed.events.length, 1);
+    const firstEvent = parsed.events[0];
+    assert.ok(firstEvent, 'Expected one event in paged response');
+    assert.equal(firstEvent.id, 'isobel-campbell-live-on-kexp-kexp_485603');
+    assert.equal(firstEvent.date_iso, '2026-06-05');
+    assert.equal(firstEvent.time_text, '11 AM');
+    assert.equal(firstEvent.venue, 'KEXP Studio (NW Rooms)');
+    assert.equal(firstEvent.photo_credit, null);
+    assert.equal(firstEvent.is_open_to_public, true);
+  } finally {
+    clearInStudioEventsCache();
+    globalThis.fetch = originalFetch;
+    await clientTransport.close();
+    await serverTransport.close();
+    await server.close();
+  }
+});
+
+test('kexp_list_in_studio_events rejects invalid date filters', async () => {
+  const { server, client, clientTransport, serverTransport } = await createConnectedClientServer();
+
+  try {
+    const result = await client.callTool({
+      name: 'kexp_list_in_studio_events',
+      arguments: {
+        start_date: '2026/06/01',
+      },
+    }) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+
+    assert.equal(result.isError, true);
+    const text = result.content.find((item) => item.type === 'text')?.text ?? '';
+    assert.match(text, /YYYY-MM-DD/i);
   } finally {
     await clientTransport.close();
     await serverTransport.close();

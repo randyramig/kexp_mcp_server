@@ -24,6 +24,7 @@
   "homepage": "https://github.com/randyramig/kexp_mcp_server#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "cheerio": "^1.2.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

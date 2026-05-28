@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { buildKexpItemUrl, buildKexpListUrl, fetchKexpJson } from './kexpClient.js';
+import { fetchKexpInStudioEvents } from './kexpEventsClient.js';
 import type { KexpQueryValue } from './kexpClient.js';
 
 const MAX_LOOKBACK_DAYS = 30;
@@ -25,6 +26,19 @@ function parseIsoDate(fieldName: string, value: string): Date {
     throw new Error(`\`${fieldName}\` must be a valid ISO 8601 datetime string.`);
   }
   return parsed;
+}
+
+function parseIsoDateOnly(fieldName: string, value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`\`${fieldName}\` must be an ISO date in YYYY-MM-DD format.`);
+  }
+
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`\`${fieldName}\` must be a valid ISO date in YYYY-MM-DD format.`);
+  }
+
+  return value;
 }
 
 function enforcePast30DayWindow(
@@ -76,6 +90,61 @@ export function createKexpMcpServer(): McpServer {
   });
 
   // ─── PLAYS ──────────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    'kexp_list_in_studio_events',
+    {
+      description: 'List upcoming and recent KEXP in-studio performances from the KEXP events web page category filter. This tool scrapes publicly listed in-studio events from https://kexp.org/events/kexp-events/?category=in-studio and returns normalized event details with pagination and optional date filtering.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).default(20)
+          .describe('Number of events to return (1-50). Default 20.'),
+        offset: z.number().int().min(0).default(0)
+          .describe('Number of events to skip for pagination. Default 0.'),
+        start_date: z.string().optional()
+          .describe('Optional lower date boundary (inclusive) in YYYY-MM-DD format.'),
+        end_date: z.string().optional()
+          .describe('Optional upper date boundary (inclusive) in YYYY-MM-DD format.'),
+      },
+    },
+    async ({ limit, offset, start_date, end_date }) => {
+      try {
+        const normalizedStartDate = start_date ? parseIsoDateOnly('start_date', start_date) : undefined;
+        const normalizedEndDate = end_date ? parseIsoDateOnly('end_date', end_date) : undefined;
+
+        if (normalizedStartDate && normalizedEndDate && normalizedStartDate > normalizedEndDate) {
+          return errorResponse(new Error('`start_date` must be earlier than or equal to `end_date`.'));
+        }
+
+        const events = await fetchKexpInStudioEvents();
+        const filteredEvents = events.filter((event) => {
+          if (normalizedStartDate && event.date_iso < normalizedStartDate) {
+            return false;
+          }
+          if (normalizedEndDate && event.date_iso > normalizedEndDate) {
+            return false;
+          }
+          return true;
+        });
+
+        const totalCount = filteredEvents.length;
+        const pagedEvents = filteredEvents.slice(offset, offset + limit);
+        const nextOffset = offset + limit < totalCount ? offset + limit : null;
+        const previousOffset = offset > 0 ? Math.max(0, offset - limit) : null;
+
+        return okResponse({
+          source: 'https://kexp.org/events/kexp-events/?category=in-studio',
+          total_count: totalCount,
+          limit,
+          offset,
+          next_offset: nextOffset,
+          previous_offset: previousOffset,
+          events: pagedEvents,
+        });
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
+  );
 
   server.registerTool(
     'kexp_list_plays',
