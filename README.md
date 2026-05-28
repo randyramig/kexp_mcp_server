@@ -108,6 +108,7 @@ Date window policy:
 
 | Tool | Description |
 |---|---|
+| `kexp_list_in_studio_events` | Scrape KEXP in-studio performances from the public events page (`category=in-studio`) with optional date filtering and pagination. |
 | `kexp_list_plays` | List plays (songs and airbreaks) with optional filters for artist, `show_ids`, play type, `exclude_airbreaks`, and date range. Date range is limited to the past 30 days. Paginated. |
 | `kexp_get_play` | Get a single play by ID — includes song, artist, album, airdate, DJ comment, labels, and MusicBrainz IDs. |
 
@@ -124,6 +125,20 @@ Date window policy:
 | `play_type` | `trackplay` \| `airbreak` | Filter by play type |
 | `exclude_airbreaks` | boolean | When `true`, omit airbreak entries from the results |
 | `ordering` | string | Sort field, e.g. `-airdate` (default) or `airdate` |
+
+**`kexp_list_in_studio_events` parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `limit` | number | Results per page (1–50, default 20). Use `offset` for pagination. |
+| `offset` | number | Pagination offset (default 0) |
+| `start_date` | string | Optional lower date boundary (inclusive), format `YYYY-MM-DD` |
+| `end_date` | string | Optional upper date boundary (inclusive), format `YYYY-MM-DD` |
+
+**`kexp_list_in_studio_events` output fields:**
+
+- `id`, `title`, `url`, `date_text`, `date_iso`, `time_text`, `venue`, `photo_credit`, `is_open_to_public`
+- Pagination metadata: `total_count`, `limit`, `offset`, `next_offset`, `previous_offset`
 
 ### Shows
 
