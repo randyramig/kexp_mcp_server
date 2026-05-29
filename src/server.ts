@@ -319,6 +319,11 @@ a named program and one or more hosts. Use this to find recent shows, shows for
 a specific program, or shows within a time range. If no date bounds are
 provided, the server defaults to the last 30 days. To find shows by a specific
 host, use kexp_list_shows_by_host instead.
+
+Each show includes a tagline set by the DJ that often reveals 
+special themed programming — World Goth Day, Music Heals Day, 
+tribute shows, album of the week features, etc. To find themed 
+programming days, fetch shows and look for keywords in taglines.
       `.trim(),
       inputSchema: {
         limit: z.number().int().min(1).max(50).default(20)
@@ -958,11 +963,31 @@ structured fields. Surface these prominently in your response.
           };
         }));
 
+        // Order: currently airing show first, then all others newest-first.
+        // "Currently airing" = most recent show whose start_time is before now.
+        // Past shows naturally sort before overnight/future shows under newest-first
+        // because today's 7 AM is a larger timestamp than yesterday's overnight shows
+        // but smaller than tonight's future shows — so we keep three explicit buckets.
+        const nowTime = now.getTime();
+        const byStartDesc = (a: { start_time: string }, b: { start_time: string }) =>
+          new Date(b.start_time).getTime() - new Date(a.start_time).getTime();
+
+        const currentShow = enriched
+          .filter(s => new Date(s.start_time).getTime() <= nowTime)
+          .sort(byStartDesc)[0];
+
+        const otherShows = enriched
+          .filter(s => s !== currentShow)
+          .sort(byStartDesc);
+
+        const orderedShows = currentShow ? [currentShow, ...otherShows] : otherShows;
+
         return okResponse({
-          _context: 'Taglines and DJ comments often reveal special programming themes, ' +
-                    'themed days, and editorial intent. Surface these prominently.',
+          _context: 'Shows are ordered: currently airing first, then earlier today newest-first, ' +
+                    'then upcoming/overnight shows. Taglines and DJ comments often reveal special ' +
+                    'programming themes, themed days, and editorial intent. Surface these prominently.',
           date: todayPacific,
-          shows: enriched,
+          shows: orderedShows,
         });
       } catch (err) {
         return errorResponse(err);
