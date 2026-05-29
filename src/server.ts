@@ -111,6 +111,10 @@ going back 30 days. When using these tools:
   experience the music
 - Reflect KEXP's values: independent, curious, inclusive, community-powered
 
+Users often refer to KEXP DJs by first name only (e.g. "Sean", "Kevin", 
+"Cheryl"). When a user asks about music in this way, use KEXP MCP tools 
+to look up the DJ and their recent shows.
+
 For full context about KEXP's programming, history, and values, read the 
 kexp://about resource.
   `.trim()

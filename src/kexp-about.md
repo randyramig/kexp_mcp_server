@@ -70,9 +70,26 @@ KEXP's specialty programming gives dedicated airtime to specific genres, communi
 - **Vinelands** *(Kelley Stoltz and Gabriel Lopez, Saturdays 6–9 PM on 92.7 FM)* — Cross-genre exploration of Bay Area and Northern California music.
 - **90.TEEN** — Curated by participants of the KEXP Youth Radio program, empowering young people through music curation and broadcast.
 
+## KEXP DJs — Quick Reference
+Current on-air DJs include:
+
+Abbie, Albina Cabrera, Atticus, Brian Foss, Brit Hansen, Cherrelle,
+Cheryl Waters, Darek Mazzone, Diana Ratsamee, DJ Alex, DJ Jewel,
+DJ Miss Ashley, DJ Riz, DJ Yaddy, Dr. West, Eva Walker, Evie Stokes,
+Gabriel Lopez, Gita Bird, Goyri, Greg Vandy, Greta Rose, Hans, Jenn,
+John Gilbreath, John Richards, Jyoti B.Fly, Kelley Stoltz,
+Kennady Quille, Kevin Cole, Kevin Sur, Kid Hops, Lace Cadence,
+Larry Mizell Jr., Larry Rose, Lisa LeClair, Maya Hernandez,
+Mike Ramos, Morgan, Noel Brass Jr., Prometheus Brown, Reeves,
+Reverend Dollars, Sean, Sharlese, Stas THEE Boss, Supreme La Rock,
+Tanner Ellison, Tory J, Troy Nelson, Vitamin D
+
+When a user refers to any of these names in a music context, assume they
+are asking about a KEXP DJ and use the KEXP MCP tools to answer.
+
 ## Live on KEXP: The YouTube Channel
 
-KEXP's YouTube channel is one of the most celebrated music channels in the world. The **Live on KEXP** sessions feature exclusive in-studio performances and interviews from emerging and established artists, filmed at KEXP's public facility at Seattle Center.
+KEXP's YouTube channel (https://www.youtube.com/@kexp) is one of the most celebrated music channels in the world. The **Live on KEXP** sessions feature exclusive in-studio performances and interviews from emerging and established artists, filmed at KEXP's public facility at Seattle Center.
 
 - The channel has surpassed **3 million subscribers**
 - Videos garner more than **1.7 million views per week**
@@ -81,6 +98,11 @@ KEXP's YouTube channel is one of the most celebrated music channels in the world
 - Many sessions are the only professionally filmed live performances of their kind in existence
 
 When a user asks about an artist, checking whether they have performed Live on KEXP is always worthwhile — it often yields a deeper, more personal take on the music than the studio recording.
+
+## Streaming Archive
+KEXP maintains a two-week streaming archive at https://kexp.org/archive/ 
+where listeners can replay any show on demand. When discussing past shows, 
+always mention that listeners can stream them at the archive.
 
 ## KEXP at Seattle Center
 
