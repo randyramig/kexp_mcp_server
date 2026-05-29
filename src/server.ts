@@ -707,6 +707,9 @@ context and the current song.
 The show tagline often reveals the theme or emotional intent of the 
 entire broadcast — treat it as significant editorial context, not 
 metadata to skip over.
+
+For a fuller picture of what's happening across the entire broadcast 
+day, call kexp_today_context first.
       `.trim(),
       inputSchema: {},
     },
@@ -857,6 +860,110 @@ local artists right now?"
         if (artist) query.artist = artist;
         const url = buildKexpListUrl({ endpoint: 'plays', limit, offset, query });
         return okResponse(await fetchKexpJson(url));
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
+  );
+
+  // ─── TODAY CONTEXT ──────────────────────────────────────────────────────────
+
+  server.registerTool(
+    'kexp_today_context',
+    {
+      description: `
+Get a rich picture of what's happening on KEXP today. Returns all shows airing
+today (in Pacific Time, where KEXP is based) with their taglines, hosts, and a
+sample of DJ comments that reveal the editorial themes and mood of each show.
+
+Use this as the first call when a user asks anything like "what's on KEXP
+today?", "what's KEXP doing today?", or "what's happening on KEXP?". The
+taglines and DJ comments often reveal special programming days, themed shows,
+album-of-the-week features, and community events that aren't visible in
+structured fields. Surface these prominently in your response.
+      `.trim(),
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const now = new Date();
+        const tz = 'America/Los_Angeles';
+
+        // Compute start and end of today in Pacific Time (KEXP's home timezone).
+        // Strategy: take UTC midnight of today's Pacific date, then shift forward
+        // by however many hours are needed to reach actual Pacific midnight.
+        const todayPacific = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now);
+        const tentativeStart = new Date(`${todayPacific}T00:00:00.000Z`);
+        const tentativeHour = parseInt(
+          new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(tentativeStart),
+          10,
+        ) % 24;
+        const startOfDay = new Date(tentativeStart.getTime() + ((24 - tentativeHour) % 24) * 3600000);
+        const endOfDay = new Date(startOfDay.getTime() + 24 * 3600000 - 1);
+
+        // Paginate through all shows scheduled for today
+        type ShowRecord = {
+          id: number;
+          program_name: string;
+          host_names: string[];
+          tagline: string | null;
+          start_time: string;
+        };
+
+        const shows: ShowRecord[] = [];
+        let nextUrl: URL | string | null = buildKexpListUrl({
+          endpoint: 'shows',
+          limit: 50,
+          offset: 0,
+          query: {
+            start_time_after: startOfDay.toISOString(),
+            start_time_before: endOfDay.toISOString(),
+            ordering: 'start_time',
+          },
+        });
+
+        while (nextUrl) {
+          const url = typeof nextUrl === 'string' ? new URL(nextUrl) : nextUrl;
+          const page = await fetchKexpJson(url) as { next: string | null; results: ShowRecord[] };
+          shows.push(...page.results);
+          nextUrl = page.next;
+        }
+
+        // For each show, fetch a sample of plays to surface DJ comments
+        const enriched = await Promise.all(shows.map(async (show) => {
+          const playsUrl = buildKexpListUrl({
+            endpoint: 'plays',
+            limit: 10,
+            offset: 0,
+            query: {
+              show_ids: show.id,
+              ordering: 'airdate',
+              exclude_airbreaks: true,
+            },
+          });
+          const playsData = await fetchKexpJson(playsUrl) as {
+            results: Array<{ comment: string | null; artist: string | null; song: string | null }>;
+          };
+          const sampleComments = playsData.results
+            .filter(p => p.comment)
+            .slice(0, 5)
+            .map(p => ({ artist: p.artist, song: p.song, comment: p.comment }));
+
+          return {
+            program: show.program_name,
+            host: show.host_names.join(', '),
+            tagline: show.tagline,
+            start_time: show.start_time,
+            sample_comments: sampleComments,
+          };
+        }));
+
+        return okResponse({
+          _context: 'Taglines and DJ comments often reveal special programming themes, ' +
+                    'themed days, and editorial intent. Surface these prominently.',
+          date: todayPacific,
+          shows: enriched,
+        });
       } catch (err) {
         return errorResponse(err);
       }
