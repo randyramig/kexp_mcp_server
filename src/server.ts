@@ -871,6 +871,80 @@ local artists right now?"
     }
   );
 
+  // ─── SHOW SEARCH ────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    'kexp_search_shows',
+    {
+      description: `
+Search KEXP show history within the past 30 days by keyword. Matches against
+show taglines and program names (case-insensitive). Use this when a user asks
+about themed programming days or special broadcasts — e.g. "when was Goth
+Day?", "did KEXP do anything for Music Heals Day?", "was there a David Bowie
+tribute show?". Taglines are written by DJs and often contain rich context
+about special broadcasts that isn't visible in any structured field. Supports
+optional date range filtering to narrow the search window.
+      `.trim(),
+      inputSchema: {
+        keyword: z.string().min(1)
+          .describe('Search term to match against show taglines and program names (case-insensitive substring match).'),
+        start_time_after: z.string().optional()
+          .describe('ISO 8601 datetime. Only search shows that started after this time. Must be within the past 30 days. If omitted, defaults to 30 days ago.'),
+        start_time_before: z.string().optional()
+          .describe('ISO 8601 datetime. Only search shows that started before this time. Must be within the past 30 days. If omitted, defaults to now.'),
+      },
+    },
+    async ({ keyword, start_time_after, start_time_before }) => {
+      try {
+        const boundedRange = enforcePast30DayWindow(
+          start_time_after,
+          start_time_before,
+          'start_time_after',
+          'start_time_before',
+        );
+
+        const needle = keyword.toLowerCase();
+        type ShowRecord = { id: number; program_name: string; host_names: string[]; tagline: string | null; start_time: string };
+
+        const matches: ShowRecord[] = [];
+        let nextUrl: URL | string | null = buildKexpListUrl({
+          endpoint: 'shows',
+          limit: 200,
+          offset: 0,
+          query: {
+            start_time_after: boundedRange.after,
+            start_time_before: boundedRange.before,
+            ordering: '-start_time',
+          },
+        });
+
+        while (nextUrl) {
+          const url = typeof nextUrl === 'string' ? new URL(nextUrl) : nextUrl;
+          const page = await fetchKexpJson(url) as { next: string | null; results: ShowRecord[] };
+          for (const show of page.results) {
+            if (
+              show.tagline?.toLowerCase().includes(needle) ||
+              show.program_name?.toLowerCase().includes(needle)
+            ) {
+              matches.push(show);
+            }
+          }
+          nextUrl = page.next;
+        }
+
+        return okResponse({
+          _context: 'These shows matched the keyword in their tagline or program name. ' +
+                    'Taglines are written by DJs and reveal special themed broadcasts.',
+          keyword,
+          total_matches: matches.length,
+          shows: matches,
+        });
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
+  );
+
   // ─── TODAY CONTEXT ──────────────────────────────────────────────────────────
 
   server.registerTool(
